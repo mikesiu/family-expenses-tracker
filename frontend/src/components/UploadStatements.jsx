@@ -6,7 +6,6 @@ const UploadStatements = ({ onUploadSuccess }) => {
     const [files, setFiles] = useState([]);
     const [uploading, setUploading] = useState(false);
     const [uploadComplete, setUploadComplete] = useState(false);
-    const [accountType, setAccountType] = useState('Chequing');
 
     // Preview states
     const [previewTransactions, setPreviewTransactions] = useState([]);
@@ -46,7 +45,6 @@ const UploadStatements = ({ onUploadSuccess }) => {
             for (const file of files) {
                 const formData = new FormData();
                 formData.append('file', file);
-                formData.append('account_type', accountType);
 
                 const response = await fetch('http://127.0.0.1:8000/upload/', {
                     method: 'POST',
@@ -182,19 +180,6 @@ const UploadStatements = ({ onUploadSuccess }) => {
         <div className="animate-fade-in" style={{ maxWidth: '800px', margin: '0 auto' }}>
             <div className="card" style={{ padding: '2rem', textAlign: 'center' }}>
                 <h3 style={{ marginBottom: '1.5rem' }}>Upload Bank Statements</h3>
-
-                <div style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'center', gap: '1rem' }}>
-                    {['Chequing', 'Savings', 'Credit Card'].map(type => (
-                        <button
-                            key={type}
-                            onClick={() => setAccountType(type)}
-                            className={`btn ${accountType === type ? 'btn-primary' : 'btn-secondary'}`}
-                            style={{ padding: '0.5rem 1rem' }}
-                        >
-                            {type}
-                        </button>
-                    ))}
-                </div>
 
                 <div
                     style={{

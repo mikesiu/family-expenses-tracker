@@ -59,6 +59,10 @@ class TransactionBase(BaseModel):
 class TransactionCreate(TransactionBase):
     pass
 
+class TransactionUpdate(BaseModel):
+    category_id: Optional[int] = None
+    is_internal_transfer: Optional[bool] = None
+
 class TransactionResponse(TransactionBase):
     id: int
     category: Optional[CategoryResponse] = None

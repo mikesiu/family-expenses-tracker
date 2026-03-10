@@ -62,6 +62,25 @@ class TransactionCreate(BaseModel):
     bank_name: Optional[str] = None
     category_id: Optional[int] = None
 
+@app.patch("/transactions/{transaction_id}", response_model=models.TransactionResponse)
+def update_transaction(transaction_id: int, transaction_update: models.TransactionUpdate, db: Session = Depends(get_db)):
+    db_tx = db.query(models.Transaction).filter(models.Transaction.id == transaction_id).first()
+    if not db_tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+        
+    if transaction_update.category_id is not None:
+        db_tx.category_id = transaction_update.category_id
+        
+    if transaction_update.is_internal_transfer is not None:
+        db_tx.is_internal_transfer = transaction_update.is_internal_transfer
+        
+    db.commit()
+    db.refresh(db_tx)
+    return db_tx
+    account_type: str
+    bank_name: Optional[str] = None
+    category_id: Optional[int] = None
+
 @app.delete("/transactions/")
 def delete_all_transactions(db: Session = Depends(get_db)):
     db.query(models.Transaction).delete()
@@ -97,7 +116,6 @@ def bulk_create_transactions(transactions: List[TransactionCreate], db: Session 
 @app.post("/upload/")
 async def upload_pdf(
     file: UploadFile = File(...),
-    account_type: str = Form(...),
     db: Session = Depends(get_db)
 ):
     if not file.filename.endswith('.pdf'):
@@ -114,6 +132,7 @@ async def upload_pdf(
         
         raw_data = parsed_result.get("transactions", [])
         bank_name = parsed_result.get("bank_name", "Unknown")
+        account_type = parsed_result.get("account_type", "Chequing")
         
         # Mock creating transactions from parsed data
         from datetime import datetime
@@ -148,22 +167,35 @@ async def upload_pdf(
                 line = line[:amt_match.start()].strip()
             
             # 2. Look for date at the start of the line (e.g. Dec. 3 Dec. 5)
-            # Use \s* to handle smashed dates like Dec. 10Dec. 10
-            date_match = re.match(r'^([A-Z][a-z]{2}\.?\s+\d{1,2}(?:\s*[A-Z][a-z]{2}\.?\s+\d{1,2})?|\d{2,4}[-/]\d{1,2}[-/]\d{1,4}|\d{1,2}/\d{1,2})\s*', line, re.IGNORECASE)
+            # Use \s* to handle smashed dates like Dec. 10Dec. 10 or 2Jan
+            date_match = re.match(r'^([A-Z][a-z]{2}\.?\s+\d{1,2}(?:\s*[A-Z][a-z]{2}\.?\s+\d{1,2})?|\d{1,2}\s*[A-Z][a-z]{2}\.?|\d{2,4}[-/]\d{1,2}[-/]\d{1,4}|\d{1,2}/\d{1,2})\s*', line, re.IGNORECASE)
+            
+            parsed_month_idx = None
+            parsed_day = None
+            parsed_iso_date = None
+            
             if date_match:
                 date_str = date_match.group(1)
                 try:
                     if '-' in date_str:
-                        date_val = datetime.strptime(date_str, "%Y-%m-%d").date()
+                        parsed_iso_date = datetime.strptime(date_str, "%Y-%m-%d").date()
                     else:
-                        # Fallback for "Dec. 3" or similar formats
-                        md_match = re.match(r'([A-Za-z]+)\.?\s+(\d+)', date_str)
+                        month_str = None
+                        # Check Month Day format (e.g. "Dec. 3")
+                        md_match = re.match(r'([A-Za-z]+)\.?\s*(\d+)', date_str)
                         if md_match:
                             month_str = md_match.group(1)[:3].title()
-                            day = int(md_match.group(2))
-                            # Using current year as statements often omit the year
-                            current_year = datetime.today().year
-                            date_val = datetime.strptime(f"{current_year} {month_str} {day}", "%Y %b %d").date()
+                            parsed_day = int(md_match.group(2))
+                        else:
+                            # Check Day Month format (e.g. "29 Dec" or "2Jan")
+                            dm_match = re.match(r'(\d+)\s*([A-Za-z]+)', date_str)
+                            if dm_match:
+                                parsed_day = int(dm_match.group(1))
+                                month_str = dm_match.group(2)[:3].title()
+                                
+                        if month_str and parsed_day:
+                            parsed_month_idx = datetime.strptime(month_str, '%b').month
+                            
                 except Exception:
                     pass
                 # Strip the date off the description
@@ -172,28 +204,61 @@ async def upload_pdf(
             if line:
                 description_val = line
             
-            # Create unsaved transaction object for categorization
-            tx = models.Transaction(
-                date=date_val,
-                amount=amount_val,
-                description=description_val,
-                account_type=account_type,
-                bank_name=bank_name
-            )
-            tx = auto_categorize(tx, categories)
-            
-            # Append as dictionary to return to frontend for validation
             new_transactions.append({
+                "iso_date": parsed_iso_date,
+                "month": parsed_month_idx,
+                "day": parsed_day,
+                "amount": amount_val,
+                "description": description_val,
+                "account_type": account_type,
+                "bank_name": bank_name
+            })
+
+        # Dual-Pass Year Resolution
+        statement_years = parsed_result.get("statement_years", [datetime.today().year])
+        max_year = max(statement_years)
+        
+        # Check if statement physically bridges a year (contains both Dec and Jan)
+        months_present = {tx["month"] for tx in new_transactions if tx["month"] is not None}
+        bridging_year = (12 in months_present and 1 in months_present)
+        
+        db_ready_transactions = []
+        for tx in new_transactions:
+            if tx["iso_date"]:
+                final_date = tx["iso_date"]
+            elif tx["month"] and tx["day"]:
+                assigned_year = max_year
+                # If bridging a year, December (12) and November (11) belong to the previous year
+                if bridging_year and tx["month"] >= 11:
+                    assigned_year = max_year - 1
+                    
+                final_date = datetime(assigned_year, tx["month"], tx["day"]).date()
+            else:
+                final_date = datetime.today().date()
+                
+            # Create unsaved transaction object for categorization
+            new_tx = models.Transaction(
+                date=final_date,
+                amount=tx["amount"],
+                description=tx["description"],
+                account_type=tx["account_type"],
+                bank_name=tx["bank_name"]
+            )
+            # Auto-categorize
+            new_tx = auto_categorize(new_tx, categories)
+            db_ready_transactions.append(new_tx)
+            
+        return_transactions = []
+        for tx in db_ready_transactions:
+            return_transactions.append({
                 "date": tx.date.isoformat(),
                 "amount": tx.amount,
                 "description": tx.description,
                 "account_type": tx.account_type,
                 "bank_name": tx.bank_name,
-                "category_id": tx.category_id,
-                "category_name": tx.category.name if tx.category else (tx.category_id if tx.category_id else "Uncategorized")
             })
             
-        return {"message": f"Successfully parsed {len(new_transactions)} transactions from {file.filename}", "data": new_transactions}
+        return {"message": f"Successfully parsed {len(return_transactions)} transactions from {file.filename}", "data": return_transactions}
         
     finally:
         if os.path.exists(temp_path):
@@ -201,12 +266,22 @@ async def upload_pdf(
 
 # Serve Frontend static files
 if os.path.exists(frontend_path):
-    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
-    
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
+        # We need to serve index.html for all non-API paths for React Router
+        if full_path.startswith("api/") or full_path.startswith("categories/") or full_path.startswith("transactions/") or full_path.startswith("upload/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+            
+        file_path = os.path.join(frontend_path, full_path)
+        # Serve the actual static file if it exists and has an extension (e.g., JS, CSS, images)
+        if os.path.isfile(file_path) and "." in os.path.basename(file_path):
+            return FileResponse(file_path)
+            
+        # Otherwise, serve index.html
         index_path = os.path.join(frontend_path, "index.html")
         return FileResponse(index_path)
+
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 
 @app.on_event("startup")
 def open_browser():

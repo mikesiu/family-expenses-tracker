@@ -2,11 +2,30 @@ import { useState, useEffect } from 'react';
 import { Calendar, Download, Printer, Filter, User, RotateCcw } from 'lucide-react';
 
 const TaxReport = () => {
-    const [provider, setProvider] = useState('');
-    const [startDate, setStartDate] = useState('2026-01-01');
-    const [endDate, setEndDate] = useState('2026-03-31');
+    const [draftProvider, setDraftProvider] = useState('');
+    const [draftStartDate, setDraftStartDate] = useState('2026-01-01');
+    const [draftEndDate, setDraftEndDate] = useState('2026-03-31');
+
+    const [appliedProvider, setAppliedProvider] = useState('');
+    const [appliedStartDate, setAppliedStartDate] = useState('2026-01-01');
+    const [appliedEndDate, setAppliedEndDate] = useState('2026-03-31');
 
     const [transactions, setTransactions] = useState([]);
+
+    const handleGenerate = () => {
+        setAppliedProvider(draftProvider);
+        setAppliedStartDate(draftStartDate);
+        setAppliedEndDate(draftEndDate);
+    };
+
+    const handleReset = () => {
+        setDraftProvider('');
+        setDraftStartDate('2026-01-01');
+        setDraftEndDate('2026-03-31');
+        setAppliedProvider('');
+        setAppliedStartDate('2026-01-01');
+        setAppliedEndDate('2026-03-31');
+    };
 
     useEffect(() => {
         fetch('http://127.0.0.1:8000/transactions/')
@@ -16,16 +35,45 @@ const TaxReport = () => {
     }, []);
 
     const reportData = transactions.filter(t => {
-        const matchesProvider = provider ?
-            t.description.toLowerCase().includes(provider.toLowerCase()) ||
-            (t.merchandiser && t.merchandiser.toLowerCase().includes(provider.toLowerCase())) : true;
-        const matchesStart = startDate ? t.date >= startDate : true;
-        const matchesEnd = endDate ? t.date <= endDate : true;
+        const matchesProvider = appliedProvider ?
+            (t.description && t.description.toLowerCase().includes(appliedProvider.toLowerCase())) ||
+            (t.merchandiser && t.merchandiser.toLowerCase().includes(appliedProvider.toLowerCase())) : true;
+        const matchesStart = appliedStartDate ? t.date >= appliedStartDate : true;
+        const matchesEnd = appliedEndDate ? t.date <= appliedEndDate : true;
 
         return matchesProvider && matchesStart && matchesEnd && t.amount < 0 && !t.is_internal_transfer;
     });
 
     const total = reportData.reduce((acc, curr) => acc + Math.abs(curr.amount), 0);
+
+    const handleDownloadCSV = () => {
+        const headers = ['Date', 'Merchandiser', 'Type', 'Amount'];
+        const csvRows = [headers.join(',')];
+        
+        reportData.forEach(row => {
+            csvRows.push([
+                row.date,
+                `"${(row.description || '').replace(/"/g, '""')}"`,
+                row.account_type || 'Unknown',
+                Math.abs(row.amount).toFixed(2)
+            ].join(','));
+        });
+        
+        csvRows.push(['', '', 'Total', total.toFixed(2)].join(','));
+        
+        const csvString = csvRows.join('\n');
+        const blob = new Blob([csvString], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `tax_report_${appliedStartDate}_to_${appliedEndDate}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const handlePrint = () => {
+        window.print();
+    };
 
     return (
         <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
@@ -44,8 +92,8 @@ const TaxReport = () => {
                                 type="text"
                                 placeholder="e.g. Shell, Safeway..."
                                 style={{ width: '100%', padding: '0.6rem 1rem 0.6rem 2.5rem', borderRadius: 'var(--border-radius-sm)', border: '1px solid var(--border-color)', outline: 'none' }}
-                                value={provider}
-                                onChange={(e) => setProvider(e.target.value)}
+                                value={draftProvider}
+                                onChange={(e) => setDraftProvider(e.target.value)}
                             />
                         </div>
                     </div>
@@ -55,8 +103,8 @@ const TaxReport = () => {
                         <input
                             type="date"
                             style={{ width: '100%', padding: '0.6rem 1rem', borderRadius: 'var(--border-radius-sm)', border: '1px solid var(--border-color)', outline: 'none' }}
-                            value={startDate}
-                            onChange={(e) => setStartDate(e.target.value)}
+                            value={draftStartDate}
+                            onChange={(e) => setDraftStartDate(e.target.value)}
                         />
                     </div>
 
@@ -65,15 +113,15 @@ const TaxReport = () => {
                         <input
                             type="date"
                             style={{ width: '100%', padding: '0.6rem 1rem', borderRadius: 'var(--border-radius-sm)', border: '1px solid var(--border-color)', outline: 'none' }}
-                            value={endDate}
-                            onChange={(e) => setEndDate(e.target.value)}
+                            value={draftEndDate}
+                            onChange={(e) => setDraftEndDate(e.target.value)}
                         />
                     </div>
                 </div>
 
                 <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem' }}>
-                    <button className="btn btn-primary" style={{ flex: 1 }}>Generate Report</button>
-                    <button className="btn btn-secondary" style={{ flex: 1 }}>
+                    <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleGenerate}>Generate Report</button>
+                    <button className="btn btn-secondary" style={{ flex: 1 }} onClick={handleReset}>
                         <RotateCcw size={16} />
                         Reset
                     </button>
@@ -84,11 +132,11 @@ const TaxReport = () => {
                 <div style={{ padding: '1.5rem', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
                         <h3>Report Results</h3>
-                        <p className="text-muted" style={{ margin: 0 }}>Showing transactions for "{provider || 'All'}" from {startDate} to {endDate}</p>
+                        <p className="text-muted" style={{ margin: 0 }}>Showing transactions for "{appliedProvider || 'All'}" from {appliedStartDate} to {appliedEndDate}</p>
                     </div>
                     <div style={{ display: 'flex', gap: '0.75rem' }}>
-                        <button className="btn btn-secondary" style={{ padding: '0.5rem' }} title="Print PDF"><Printer size={18} /></button>
-                        <button className="btn btn-secondary" style={{ padding: '0.5rem' }} title="Download CSV"><Download size={18} /></button>
+                        <button className="btn btn-secondary" style={{ padding: '0.5rem' }} title="Print PDF" onClick={handlePrint}><Printer size={18} /></button>
+                        <button className="btn btn-secondary" style={{ padding: '0.5rem' }} title="Download CSV" onClick={handleDownloadCSV}><Download size={18} /></button>
                     </div>
                 </div>
 
